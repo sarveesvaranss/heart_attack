@@ -232,7 +232,6 @@ print("✅ Models and preprocessor saved successfully.")
 
 
 
-!pip install dash dash-bootstrap-components
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -287,7 +286,6 @@ from dash import Dash, html, dcc
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
 
-server = app.server
 
 # Load models and scaler
 model_lr = joblib.load('models/model_lr.pkl')
@@ -354,6 +352,8 @@ def get_input_component(feature):
 
 # Initialize app
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+server = app.server
 
 # Layout
 app.layout = dbc.Container([

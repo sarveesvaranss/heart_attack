@@ -232,60 +232,11 @@ print("✅ Models and preprocessor saved successfully.")
 
 
 
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
 import joblib
-import os
-
-# Step 1: Load dataset (replace with your actual dataset)
-df = pd.read_csv('heart_disease_data.csv')  # Replace this with the actual path to your dataset
-
-# Step 2: Feature-target split (Assuming 'target' is the column to predict)
-X = df.drop('target', axis=1)  # Features (input variables)
-y = df['target']  # Target variable (1 = Heart disease, 0 = No heart disease)
-
-# Step 3: Handle missing values (optional, drop rows with missing values in this case)
-df = df.dropna()
-
-# Step 4: Train-test split (80% training, 20% testing)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Step 5: Scale the features (important for models like Logistic Regression and SVM)
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
-# Step 6: Train models
-model_lr = LogisticRegression()
-model_rf = RandomForestClassifier()
-model_svm = SVC(probability=True)
-
-# Train the models
-model_lr.fit(X_train_scaled, y_train)
-model_rf.fit(X_train_scaled, y_train)
-model_svm.fit(X_train_scaled, y_train)
-
-# Step 7: Create a directory to save models (if it doesn't exist)
-os.makedirs('models', exist_ok=True)
-
-# Step 8: Save models and scaler
-joblib.dump(model_lr, 'models/model_lr.pkl')
-joblib.dump(model_rf, 'models/model_rf.pkl')
-joblib.dump(model_svm, 'models/model_svm.pkl')
-joblib.dump(scaler, 'models/scaler.pkl')
-
-print("✅ Models and scaler saved successfully.")
-
-import joblib
+import plotly.graph_objs as go
 from dash import Dash, html, dcc
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
-
 
 # Load models and scaler
 model_lr = joblib.load('models/model_lr.pkl')
@@ -293,7 +244,7 @@ model_rf = joblib.load('models/model_rf.pkl')
 model_svm = joblib.load('models/model_svm.pkl')
 scaler = joblib.load('models/scaler.pkl')
 
-# Feature abbreviation to full name mapping
+# Feature names and labels
 feature_labels = {
     'age': 'Age',
     'sex': 'Sex',
@@ -310,7 +261,6 @@ feature_labels = {
     'thal': 'Thalassemia'
 }
 
-# Feature order
 feature_names = list(feature_labels.keys())
 
 # Input component generator
@@ -350,9 +300,8 @@ def get_input_component(feature):
             placeholder="Enter value"
         )
 
-# Initialize app
+# Dash app
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
 server = app.server
 
 # Layout
@@ -383,43 +332,70 @@ app.layout = dbc.Container([
     ]),
 
     dbc.Button("Predict", id="predict-button", color="primary", className="mt-3"),
+    html.Div(id="output", className="mt-4"),
 
-    html.Div(id="output", className="mt-4")
+    html.Br(),
+
+    dcc.Graph(id="probability-graph"),
+    dcc.Graph(id="feature-importance-graph")
 ])
 
 # Callback
 @app.callback(
-    Output("output", "children"),
+    [Output("output", "children"),
+     Output("probability-graph", "figure"),
+     Output("feature-importance-graph", "figure")],
     Input("predict-button", "n_clicks"),
     [State(f"input-{feature}", "value") for feature in feature_names] +
     [State("model-dropdown", "value")]
 )
 def predict(n_clicks, *args):
     if not n_clicks:
-        return ""
+        return "", go.Figure(), go.Figure()
 
     values = args[:-1]
     selected_model = args[-1]
 
     if None in values:
-        return dbc.Alert("Please fill in all input values.", color="warning")
+        return dbc.Alert("Please fill in all input values.", color="warning"), go.Figure(), go.Figure()
 
     try:
         input_data = scaler.transform([values])
-        model = {"lr": model_lr, "rf": model_rf, "svm": model_svm}.get(selected_model)
-
-        if not model:
-            return dbc.Alert("Invalid model selected.", color="danger")
+        model_map = {"lr": model_lr, "rf": model_rf, "svm": model_svm}
+        model = model_map.get(selected_model)
 
         prediction = model.predict(input_data)[0]
+        proba = model.predict_proba(input_data)[0]
         result_text = "Heart Disease" if prediction == 1 else "No Heart Disease"
         result_color = "danger" if prediction == 1 else "success"
 
-        return dbc.Alert(f"Prediction: {result_text}", color=result_color)
+        # --- Probability Graph ---
+        prob_fig = go.Figure(data=[
+            go.Bar(
+                x=["No Heart Disease", "Heart Disease"],
+                y=[proba[0], proba[1]],
+                marker_color=["green", "red"]
+            )
+        ])
+        prob_fig.update_layout(title="Prediction Probability", xaxis_title="Condition", yaxis_title="Confidence")
+
+        # --- Feature Importance (Only for Random Forest) ---
+        if selected_model == "rf":
+            importances = model.feature_importances_
+            feature_fig = go.Figure(data=[
+                go.Bar(x=list(feature_labels.values()), y=importances, marker_color="blue")
+            ])
+            feature_fig.update_layout(title="Feature Importance (Random Forest)",
+                                      xaxis_title="Features",
+                                      yaxis_title="Importance Score")
+        else:
+            feature_fig = go.Figure()
+
+        return dbc.Alert(f"Prediction: {result_text}", color=result_color), prob_fig, feature_fig
 
     except Exception as e:
-        return dbc.Alert(f"Error: {e}", color="danger")
+        return dbc.Alert(f"Error: {str(e)}", color="danger"), go.Figure(), go.Figure()
 
-# Run the app
+# Run
 if __name__ == '__main__':
     app.run(debug=True, port=8051, host='0.0.0.0')

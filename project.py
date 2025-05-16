@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore")
 # Load dataset
 df = pd.read_csv('heart_disease_data.csv')
 
+
 # Rename columns for clarity
 df.columns = [
     "age", "sex", "cp", "trtbps", "chol", "fbs", "rest_ecg", "thalach",
@@ -285,6 +286,8 @@ import joblib
 from dash import Dash, html, dcc
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
+
+server = app.server
 
 # Load models and scaler
 model_lr = joblib.load('models/model_lr.pkl')

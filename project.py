@@ -1,52 +1,56 @@
-# Section 1: Data Loading & Initial Preprocessing
-
-# Import basic libraries
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
+import missingno
+
+from scipy.stats.mstats import winsorize
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, RocCurveDisplay
+import joblib
 
 warnings.filterwarnings("ignore")
+
+# Set random seed for reproducibility
+random_state = 42
 
 # Load dataset
 df = pd.read_csv('heart_disease_data.csv')
 
-
-# Rename columns for clarity
+# Rename columns
 df.columns = [
     "age", "sex", "cp", "trtbps", "chol", "fbs", "rest_ecg", "thalach",
     "exang", "oldpeak", "slope", "ca", "thal", "target"
 ]
 
-# Basic dataset info
+# Dataset overview
 print("Dataset Shape:", df.shape)
 print(df.info())
 print("Missing Values:\n", df.isnull().sum())
 
 # Section 2: Handling Missing Data & Basic EDA
 
-import missingno
-
 # Visualize missing data
 missingno.bar(df, color="blue")
 plt.title("Missing Values in Dataset")
 plt.show()
 
-# Replace 'thal' value 0 with NaN
+# Replace 0 in 'thal' with NaN, then fill with mode
 df['thal'] = df['thal'].replace(0, np.nan)
-
-# Fill missing 'thal' values with mode
-df['thal'].fillna(2, inplace=True)
+df['thal'].fillna(df['thal'].mode()[0], inplace=True)
 df['thal'] = pd.to_numeric(df['thal'], downcast='integer')
 
 # Section 3: Visualizations
 
-# Numerical and Categorical Variables
 numeric_features = ["age", "trtbps", "chol", "thalach", "oldpeak"]
 categorical_features = ["sex", "cp", "fbs", "rest_ecg", "exang", "slope", "ca", "thal", "target"]
 
-# Distribution plots for numeric features
+# Distribution plots
 for feature in numeric_features:
     plt.figure(figsize=(8, 4))
     sns.histplot(df[feature], kde=True, bins=20)
@@ -54,7 +58,7 @@ for feature in numeric_features:
     plt.tight_layout()
     plt.show()
 
-# Count plots for categorical features
+# Count plots
 for feature in categorical_features:
     plt.figure(figsize=(8, 4))
     sns.countplot(x=feature, data=df, hue="target")
@@ -64,338 +68,227 @@ for feature in categorical_features:
 
 # Section 4: Outlier Detection and Treatment
 
-from scipy.stats.mstats import winsorize
-
-# Winsorize 'trtbps'
-df["trtbps_winsorized"] = winsorize(df["trtbps"], limits=(0, 0.01))
-
-# Winsorize 'oldpeak'
-df["oldpeak_winsorized"] = winsorize(df["oldpeak"], limits=(0, 0.01))
-
-# Drop old columns
-df.drop(["trtbps", "oldpeak"], axis=1, inplace=True)
+df["trtbps"] = winsorize(df["trtbps"], limits=(0, 0.01))
+df["oldpeak"] = winsorize(df["oldpeak"], limits=(0, 0.01))
 
 # Section 5: Feature Engineering & Scaling
 
-from sklearn.preprocessing import RobustScaler
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-
-# Log or sqrt transform if needed
-df["oldpeak_sqrt"] = np.sqrt(df["oldpeak_winsorized"])
-
-# Drop unnecessary features
+df["oldpeak_sqrt"] = np.sqrt(df["oldpeak"])
 df.drop(["chol", "fbs", "rest_ecg"], axis=1, inplace=True)
 
-# Section 6: Define Preprocessing Pipeline
+# One-hot encoding
+categorical_to_encode = ["sex", "cp", "exang", "slope", "ca", "thal"]
+df_encoded = pd.get_dummies(df, columns=categorical_to_encode, drop_first=True)
 
-# Features to scale and encode
-numeric_features = ["age", "thalach", "trtbps_winsorized", "oldpeak_sqrt"]
-categorical_features = ["sex", "cp", "exang", "slope", "ca", "thal"]
+# Scaling
+features_to_scale = ["age", "thalach", "trtbps", "oldpeak_sqrt"]
+scaler = RobustScaler()
+df_encoded[features_to_scale] = scaler.fit_transform(df_encoded[features_to_scale])
 
-# Create the preprocessing pipeline
-numeric_transformer = Pipeline(steps=[
-    ("scaler", RobustScaler())
-])
+# Section 6: Train & Evaluate Multiple Models
 
-categorical_transformer = Pipeline(steps=[
-    ("encoder", OneHotEncoder(drop='first'))
-])
+# Features and target
+X = df_encoded.drop("target", axis=1)
+y = df_encoded["target"]
 
-# Combine transformers into a preprocessor
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", numeric_transformer, numeric_features),
-        ("cat", categorical_transformer, categorical_features)
-    ]
-)
+# Save feature names
+joblib.dump(X.columns.tolist(), "feature_columns.pkl")
 
-# Section 7: Model Training with Pipeline
+# Split data with a fixed random_state
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
 
+# Define models with random_state set for reproducibility
+models = {
+    "Logistic Regression": LogisticRegression(random_state=random_state),
+    "Support Vector Machine": SVC(probability=True, random_state=random_state),
+    "Random Forest": RandomForestClassifier(random_state=random_state)
+}
+
+best_models = {}
+
+# Train & evaluate
+for name, model in models.items():
+    print(f"\nTraining: {name}")
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    accuracy = accuracy_score(y_test, y_pred)
+    print(f"{name} Accuracy: {accuracy:.4f}")
+    print(f"{name} Classification Report:\n{classification_report(y_test, y_pred)}")
+
+    # ROC Curve
+    RocCurveDisplay.from_estimator(model, X_test, y_test)
+    plt.title(f"{name} - ROC Curve")
+    plt.show()
+
+    # Save the trained model
+    best_models[name] = model
+
+    # Cross-validation
+    cv_score = cross_val_score(model, X_train, y_train, cv=10).mean()
+    print(f"{name} Cross-Validation Accuracy: {cv_score:.4f}")
+
+# Section 7: Hyperparameter Tuning
+
+# Logistic Regression
+param_grid_lr = {
+    "penalty": ["l1", "l2"],
+    "solver": ["liblinear", "saga"]
+}
+grid_lr = GridSearchCV(LogisticRegression(random_state=random_state), param_grid=param_grid_lr, cv=5)
+grid_lr.fit(X_train, y_train)
+print("\nBest Params (Logistic Regression):", grid_lr.best_params_)
+
+# Random Forest
+param_grid_rf = {
+    "n_estimators": [50, 100, 200],
+    "criterion": ["gini", "entropy"],
+    "bootstrap": [True, False],
+    "max_features": ["sqrt"]
+}
+grid_rf = GridSearchCV(RandomForestClassifier(random_state=random_state), param_grid=param_grid_rf, cv=5)
+grid_rf.fit(X_train, y_train)
+print("Best Params (Random Forest):", grid_rf.best_params_)
+
+# SVM
+param_grid_svm = {
+    "C": [0.1, 1, 10],
+    "kernel": ["linear", "rbf"],
+    "gamma": ["scale", "auto"]
+}
+grid_svm = GridSearchCV(SVC(probability=True, random_state=random_state), param_grid=param_grid_svm, cv=5)
+grid_svm.fit(X_train, y_train)
+print("Best Params (SVM):", grid_svm.best_params_)
+
+# Section 8: Save Tuned Models
+
+joblib.dump(grid_lr.best_estimator_, "model_logistic.pkl")
+joblib.dump(grid_rf.best_estimator_, "model_random_forest.pkl")
+joblib.dump(grid_svm.best_estimator_, "model_svm.pkl")
+joblib.dump(scaler, "scaler.pkl")
+
+print("\n✅ All models and scaler saved successfully.")
+
+
+
+
+import dash
+from dash import dcc, html
+import dash_bootstrap_components as dbc
+import joblib
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+from dash.dependencies import Input, Output, State
+from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, roc_curve, auc
-from sklearn.model_selection import GridSearchCV
-from sklearn.pipeline import Pipeline
+
+# Load dataset
+df = pd.read_csv('heart_disease_data.csv')  # Replace with your actual dataset
+
+# Feature-target split
+X = df.drop('target', axis=1)
+y = df['target']
 
 # Train-test split
-X = df.drop("target", axis=1)
-y = df["target"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Section 8: Create Pipelines for Logistic Regression, SVM, and Random Forest
+# Scale the features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
-# Logistic Regression Pipeline
-log_reg_pipeline = Pipeline(steps=[
-    ("preprocessor", preprocessor),
-    ("classifier", LogisticRegression())
-])
+# Train models
+model_rf = RandomForestClassifier()
+model_rf.fit(X_train_scaled, y_train)
 
-# Random Forest Pipeline
-rf_pipeline = Pipeline(steps=[
-    ("preprocessor", preprocessor),
-    ("classifier", RandomForestClassifier())
-])
+# Initialize app
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-# Support Vector Machine (SVM) Pipeline
-svm_pipeline = Pipeline(steps=[
-    ("preprocessor", preprocessor),
-    ("classifier", SVC(probability=True))
-])
-
-# Section 9: Hyperparameter Tuning with GridSearchCV
-
-# Logistic Regression Hyperparameters
-param_grid_lr = {
-    "classifier__penalty": ["l1", "l2"],
-    "classifier__solver": ['liblinear', 'saga']
-}
-
-# Random Forest Hyperparameters
-param_grid_rf = {
-    "classifier__n_estimators": [50, 100, 200],
-    "classifier__criterion": ["gini", "entropy"],
-    "classifier__bootstrap": [True, False],
-    "classifier__max_features": ["sqrt"]
-}
-
-# SVM Hyperparameters
-param_grid_svm = {
-    "classifier__C": [0.1, 1, 10],
-    "classifier__kernel": ["linear", "rbf"]
-}
-
-# Create GridSearchCV for each model
-grid_lr = GridSearchCV(log_reg_pipeline, param_grid_lr, cv=5, n_jobs=-1, scoring="accuracy")
-grid_rf = GridSearchCV(rf_pipeline, param_grid_rf, cv=5, n_jobs=-1, scoring="accuracy")
-grid_svm = GridSearchCV(svm_pipeline, param_grid_svm, cv=5, n_jobs=-1, scoring="accuracy")
-
-# Fit models with GridSearchCV
-grid_lr.fit(X_train, y_train)
-grid_rf.fit(X_train, y_train)
-grid_svm.fit(X_train, y_train)
-
-# Best parameters found
-print("Best Parameters for Logistic Regression:", grid_lr.best_params_)
-print("Best Parameters for Random Forest:", grid_rf.best_params_)
-print("Best Parameters for SVM:", grid_svm.best_params_)
-
-# Section 10: Model Evaluation & ROC Curve
-
-# Evaluate Logistic Regression
-y_pred_lr = grid_lr.predict(X_test)
-fpr_lr, tpr_lr, _ = roc_curve(y_test, grid_lr.predict_proba(X_test)[:, 1])
-roc_auc_lr = auc(fpr_lr, tpr_lr)
-print("Logistic Regression Accuracy:", accuracy_score(y_test, y_pred_lr))
-
-# Evaluate Random Forest
-y_pred_rf = grid_rf.predict(X_test)
-fpr_rf, tpr_rf, _ = roc_curve(y_test, grid_rf.predict_proba(X_test)[:, 1])
-roc_auc_rf = auc(fpr_rf, tpr_rf)
-print("Random Forest Accuracy:", accuracy_score(y_test, y_pred_rf))
-
-# Evaluate SVM
-y_pred_svm = grid_svm.predict(X_test)
-fpr_svm, tpr_svm, _ = roc_curve(y_test, grid_svm.predict_proba(X_test)[:, 1])
-roc_auc_svm = auc(fpr_svm, tpr_svm)
-print("SVM Accuracy:", accuracy_score(y_test, y_pred_svm))
-
-# Plot ROC Curves
-plt.figure(figsize=(8, 6))
-plt.plot(fpr_lr, tpr_lr, color='blue', lw=2, label='Logistic Regression (AUC = %0.2f)' % roc_auc_lr)
-plt.plot(fpr_rf, tpr_rf, color='green', lw=2, label='Random Forest (AUC = %0.2f)' % roc_auc_rf)
-plt.plot(fpr_svm, tpr_svm, color='red', lw=2, label='SVM (AUC = %0.2f)' % roc_auc_svm)
-plt.plot([0, 1], [0, 1], color='black', lw=2, linestyle='--')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic (ROC) Curves')
-plt.legend(loc="lower right")
-plt.show()
-
-# Section 11: Save Models
-
-import joblib
-
-# Save the best models
-joblib.dump(grid_lr.best_estimator_, "model_lr.pkl")
-joblib.dump(grid_rf.best_estimator_, "model_rf.pkl")
-joblib.dump(grid_svm.best_estimator_, "model_svm.pkl")
-joblib.dump(preprocessor, "preprocessor.pkl")
-
-print("✅ Models and preprocessor saved successfully.")
-
-
-
-
-import joblib
-import plotly.graph_objs as go
-from dash import Dash, html, dcc
-import dash_bootstrap_components as dbc
-from dash.dependencies import Input, Output, State
-
-# Load models and scaler
-model_lr = joblib.load('models/model_lr.pkl')
-model_rf = joblib.load('models/model_rf.pkl')
-model_svm = joblib.load('models/model_svm.pkl')
-scaler = joblib.load('models/scaler.pkl')
-
-# Feature names and labels
-feature_labels = {
-    'age': 'Age',
-    'sex': 'Sex',
-    'cp': 'Chest Pain Type',
-    'trestbps': 'Resting Blood Pressure',
-    'chol': 'Serum Cholesterol',
-    'fbs': 'Fasting Blood Sugar',
-    'restecg': 'Resting ECG Results',
-    'thalach': 'Max Heart Rate Achieved',
-    'exang': 'Exercise Induced Angina',
-    'oldpeak': 'ST Depression (Oldpeak)',
-    'slope': 'Slope of ST Segment',
-    'ca': 'Major Vessels Colored',
-    'thal': 'Thalassemia'
-}
-
-feature_names = list(feature_labels.keys())
-
-# Input component generator
-def get_input_component(feature):
-    dropdown_options = {
-        'sex': [{"label": "Male", "value": 1}, {"label": "Female", "value": 0}],
-        'cp': [{"label": "Typical Angina", "value": 1},
-               {"label": "Atypical Angina", "value": 2},
-               {"label": "Non-anginal Pain", "value": 3},
-               {"label": "Asymptomatic", "value": 0}],
-        'fbs': [{"label": "True", "value": 1}, {"label": "False", "value": 0}],
-        'restecg': [{"label": "Normal", "value": 1},
-                    {"label": "ST-T Abnormality", "value": 2},
-                    {"label": "Hypertrophy", "value": 0}],
-        'exang': [{"label": "Yes", "value": 1}, {"label": "No", "value": 0}],
-        'slope': [{"label": "Upsloping", "value": 2},
-                  {"label": "Flat", "value": 1},
-                  {"label": "Downsloping", "value": 0}],
-        'thal': [{"label": "Normal", "value": 2},
-                 {"label": "Fixed Defect", "value": 1},
-                 {"label": "Reversible Defect", "value": 3}]
-    }
-
-    if feature in dropdown_options:
-        return dcc.Dropdown(
-            id=f"input-{feature}",
-            options=dropdown_options[feature],
-            className="form-control",
-            placeholder="Select"
-        )
-    else:
-        return dcc.Input(
-            id=f"input-{feature}",
-            type="number",
-            step=0.01,
-            className="form-control",
-            placeholder="Enter value"
-        )
-
-# Dash app
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
-
 # Layout
 app.layout = dbc.Container([
     html.H1("Heart Disease Prediction", className="text-center my-4"),
 
     dbc.Row([
         dbc.Col([
-            dbc.Label(f"{feature.upper()} - {feature_labels[feature]}"),
-            get_input_component(feature)
-        ], width=6) for feature in feature_names
-    ]),
-
-    html.Br(),
-
-    dbc.Row([
+            dbc.Label("Age"),
+            dcc.Input(id="input-age", type="number", placeholder="Enter age", className="form-control")
+        ], width=6),
         dbc.Col([
-            dbc.Label("Select Model"),
-            dcc.Dropdown(id="model-dropdown",
-                         options=[
-                             {"label": "Logistic Regression", "value": "lr"},
-                             {"label": "Random Forest", "value": "rf"},
-                             {"label": "SVM", "value": "svm"}
-                         ],
-                         value="lr",
-                         className="form-control")
-        ], width=6)
+            dbc.Label("Sex"),
+            dcc.Dropdown(
+                id="input-sex",
+                options=[{"label": "Male", "value": 1}, {"label": "Female", "value": 0}],
+                className="form-control",
+                placeholder="Select sex"
+            )
+        ], width=6),
+        # Add more input fields for other features...
     ]),
 
     dbc.Button("Predict", id="predict-button", color="primary", className="mt-3"),
-    html.Div(id="output", className="mt-4"),
 
-    html.Br(),
+    html.Div(id="prediction-output", className="mt-4"),
 
-    dcc.Graph(id="probability-graph"),
-    dcc.Graph(id="feature-importance-graph")
+    # ROC Curve
+    dcc.Graph(id="roc-curve"),
+
+    # Feature Importance
+    dcc.Graph(id="feature-importance"),
+
+    # Confusion Matrix
+    dcc.Graph(id="confusion-matrix")
 ])
 
-# Callback
+# Callback for prediction and graphs
 @app.callback(
-    [Output("output", "children"),
-     Output("probability-graph", "figure"),
-     Output("feature-importance-graph", "figure")],
+    [Output("prediction-output", "children"),
+     Output("roc-curve", "figure"),
+     Output("feature-importance", "figure"),
+     Output("confusion-matrix", "figure")],
     Input("predict-button", "n_clicks"),
-    [State(f"input-{feature}", "value") for feature in feature_names] +
-    [State("model-dropdown", "value")]
+    [State("input-age", "value"),
+     State("input-sex", "value")]
+    # Add more states for other inputs...
 )
-def predict(n_clicks, *args):
+def update_output(n_clicks, age, sex):
     if not n_clicks:
-        return "", go.Figure(), go.Figure()
+        return "", go.Figure(), go.Figure(), go.Figure()
 
-    values = args[:-1]
-    selected_model = args[-1]
+    # Prepare input data
+    input_data = np.array([[age, sex]])  # Add other features here
+    input_scaled = scaler.transform(input_data)
 
-    if None in values:
-        return dbc.Alert("Please fill in all input values.", color="warning"), go.Figure(), go.Figure()
+    # Prediction
+    prediction = model_rf.predict(input_scaled)[0]
+    prediction_text = "Heart Disease" if prediction == 1 else "No Heart Disease"
 
-    try:
-        input_data = scaler.transform([values])
-        model_map = {"lr": model_lr, "rf": model_rf, "svm": model_svm}
-        model = model_map.get(selected_model)
+    # ROC Curve
+    y_pred_prob = model_rf.predict_proba(X_test_scaled)[:, 1]
+    fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
+    roc_auc = auc(fpr, tpr)
+    roc_fig = go.Figure()
+    roc_fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name=f"ROC curve (AUC = {roc_auc:.2f})"))
+    roc_fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode='lines', name='Random classifier', line=dict(dash='dash')))
+    roc_fig.update_layout(title="Receiver Operating Characteristic Curve", xaxis_title="False Positive Rate", yaxis_title="True Positive Rate")
 
-        prediction = model.predict(input_data)[0]
-        proba = model.predict_proba(input_data)[0]
-        result_text = "Heart Disease" if prediction == 1 else "No Heart Disease"
-        result_color = "danger" if prediction == 1 else "success"
+    # Feature Importance
+    importances = model_rf.feature_importances_
+    feature_names = X.columns
+    fi_fig = go.Figure()
+    fi_fig.add_trace(go.Bar(x=feature_names, y=importances))
+    fi_fig.update_layout(title="Feature Importance", xaxis_title="Feature", yaxis_title="Importance")
 
-        # --- Probability Graph ---
-        prob_fig = go.Figure(data=[
-            go.Bar(
-                x=["No Heart Disease", "Heart Disease"],
-                y=[proba[0], proba[1]],
-                marker_color=["green", "red"]
-            )
-        ])
-        prob_fig.update_layout(title="Prediction Probability", xaxis_title="Condition", yaxis_title="Confidence")
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, model_rf.predict(X_test_scaled))
+    cm_fig = go.Figure()
+    cm_fig.add_trace(go.Heatmap(z=cm, x=['No Heart Disease', 'Heart Disease'], y=['No Heart Disease', 'Heart Disease'], colorscale='Viridis'))
+    cm_fig.update_layout(title="Confusion Matrix", xaxis_title="Predicted", yaxis_title="Actual")
 
-        # --- Feature Importance (Only for Random Forest) ---
-        if selected_model == "rf":
-            importances = model.feature_importances_
-            feature_fig = go.Figure(data=[
-                go.Bar(x=list(feature_labels.values()), y=importances, marker_color="blue")
-            ])
-            feature_fig.update_layout(title="Feature Importance (Random Forest)",
-                                      xaxis_title="Features",
-                                      yaxis_title="Importance Score")
-        else:
-            feature_fig = go.Figure()
+    return f"Prediction: {prediction_text}", roc_fig, fi_fig, cm_fig
 
-        return dbc.Alert(f"Prediction: {result_text}", color=result_color), prob_fig, feature_fig
-
-    except Exception as e:
-        return dbc.Alert(f"Error: {str(e)}", color="danger"), go.Figure(), go.Figure()
-
-# Run
 if __name__ == '__main__':
     app.run(debug=True, port=8051, host='0.0.0.0')

@@ -296,6 +296,8 @@ def get_input_component(feature):
 # Initialize app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
+server = app.server
+
 # Layout
 app.layout = dbc.Container([
 
